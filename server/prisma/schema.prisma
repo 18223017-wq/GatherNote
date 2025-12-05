@@ -1,0 +1,112 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+enum NoteStatus {
+  UNSTARTED
+  ONGOING
+  ARCHIVED
+}
+
+enum NoteVisibility {
+  PRIVATE
+  PUBLIC
+  GROUP
+}
+
+model User {
+  id            Int       @id @default(autoincrement())
+  name          String
+  email         String    @unique
+  password_hash String
+  avatar_url    String?
+  created_at    DateTime  @default(now())
+  
+  notes         Note[]
+  folders       Folder[]
+  memberships   GroupMember[]
+  collaborations NoteCollaborator[]
+
+  @@map("users")
+}
+
+model Folder {
+  id          Int      @id @default(autoincrement())
+  owner_id    Int
+  name        String
+  description String?  @db.Text
+  color       String?
+  icon        String?
+  is_pinned   Boolean  @default(false)
+  created_at  DateTime @default(now())
+
+  owner       User     @relation(fields: [owner_id], references: [id])
+  notes       Note[]
+
+  @@map("folders")
+}
+
+model Note {
+  id          Int             @id @default(autoincrement())
+  owner_id    Int
+  folder_id   Int?
+  title       String
+  content     String?         @db.LongText
+  status      NoteStatus      @default(UNSTARTED)
+  priority    String?         // Untuk Unstarted
+  progress    Int?            // Untuk Ongoing (0-100)
+  is_favorite Boolean         @default(false)
+  visibility  NoteVisibility  @default(PRIVATE)
+  created_at  DateTime        @default(now())
+  updated_at  DateTime        @updatedAt
+
+  owner         User                @relation(fields: [owner_id], references: [id])
+  folder        Folder?             @relation(fields: [folder_id], references: [id])
+  collaborators NoteCollaborator[]
+
+  @@map("notes")
+}
+
+model Group {
+  id          Int      @id @default(autoincrement())
+  name        String
+  description String?
+  join_code   String   @unique // Code untuk join group
+  created_at  DateTime @default(now())
+
+  members     GroupMember[]
+
+  @@map("groups")
+}
+
+model GroupMember {
+  id        Int      @id @default(autoincrement())
+  group_id  Int
+  user_id   Int
+  role      String   @default("MEMBER") // ADMIN or MEMBER
+  joined_at DateTime @default(now())
+
+  group     Group    @relation(fields: [group_id], references: [id])
+  user      User     @relation(fields: [user_id], references: [id])
+
+  @@map("group_members")
+}
+
+model NoteCollaborator {
+  id         Int      @id @default(autoincrement())
+  note_id    Int
+  user_id    Int
+  permission String   @default("VIEW") // VIEW or EDIT
+  added_at   DateTime @default(now())
+
+  note       Note     @relation(fields: [note_id], references: [id], onDelete: Cascade)
+  user       User     @relation(fields: [user_id], references: [id])
+
+  @@unique([note_id, user_id])
+  @@map("note_collaborators")
+}
