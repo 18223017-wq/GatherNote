@@ -1,5 +1,7 @@
-const prisma = require('../config/database');
+const db = require('../config/database');
+const { users } = require('../config/schema');
 const { hashPassword } = require('../utils/password.util');
+const { eq } = require('drizzle-orm');
 
 /**
  * Get current user profile
@@ -7,16 +9,13 @@ const { hashPassword } = require('../utils/password.util');
  */
 const getProfile = async (req, res) => {
   try {
-    const user = await prisma.user.findUnique({
-      where: { id: req.user.userId },
-      select: {
-        id: true,
-        name: true,
-        email: true,
-        avatar_url: true,
-        created_at: true
-      }
-    });
+    const [user] = await db.select({
+      id: users.id,
+      name: users.name,
+      email: users.email,
+      avatar_url: users.avatar_url,
+      created_at: users.created_at
+    }).from(users).where(eq(users.id, req.user.userId)).limit(1);
 
     if (!user) {
       return res.status(404).json({
@@ -49,17 +48,15 @@ const updateProfile = async (req, res) => {
     if (avatar_url !== undefined) updateData.avatar_url = avatar_url;
     // Note: bio field not in current schema, but kept for future use
 
-    const user = await prisma.user.update({
-      where: { id: req.user.userId },
-      data: updateData,
-      select: {
-        id: true,
-        name: true,
-        email: true,
-        avatar_url: true,
-        created_at: true
-      }
-    });
+    await db.update(users).set(updateData).where(eq(users.id, req.user.userId));
+
+    const [user] = await db.select({
+      id: users.id,
+      name: users.name,
+      email: users.email,
+      avatar_url: users.avatar_url,
+      created_at: users.created_at
+    }).from(users).where(eq(users.id, req.user.userId));
 
     res.json({
       message: 'Profile updated successfully',

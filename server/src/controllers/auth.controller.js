@@ -1,7 +1,9 @@
-const prisma = require('../config/database');
+const db = require('../config/database');
+const { users } = require('../config/schema');
 const { hashPassword, comparePassword } = require('../utils/password.util');
 const { generateToken } = require('../utils/jwt.util');
 const { isValidEmail, isValidPassword } = require('../utils/validator.util');
+const { eq } = require('drizzle-orm');
 
 /**
  * Register new user
@@ -34,11 +36,9 @@ const register = async (req, res) => {
     }
 
     // Check if user already exists
-    const existingUser = await prisma.user.findUnique({
-      where: { email }
-    });
+    const existingUser = await db.select().from(users).where(eq(users.email, email)).limit(1);
 
-    if (existingUser) {
+    if (existingUser.length > 0) {
       return res.status(409).json({
         error: 'Conflict',
         message: 'User with this email already exists'
@@ -49,20 +49,20 @@ const register = async (req, res) => {
     const password_hash = await hashPassword(password);
 
     // Create user
-    const user = await prisma.user.create({
-      data: {
-        name,
-        email,
-        password_hash
-      },
-      select: {
-        id: true,
-        name: true,
-        email: true,
-        avatar_url: true,
-        created_at: true
-      }
+    const [newUser] = await db.insert(users).values({
+      name,
+      email,
+      password_hash
     });
+
+    // Get created user
+    const [user] = await db.select({
+      id: users.id,
+      name: users.name,
+      email: users.email,
+      avatar_url: users.avatar_url,
+      created_at: users.created_at
+    }).from(users).where(eq(users.id, newUser.insertId));
 
     // Generate JWT token
     const token = generateToken({
@@ -102,9 +102,7 @@ const login = async (req, res) => {
     }
 
     // Find user
-    const user = await prisma.user.findUnique({
-      where: { email }
-    });
+    const [user] = await db.select().from(users).where(eq(users.email, email)).limit(1);
 
     if (!user) {
       return res.status(401).json({

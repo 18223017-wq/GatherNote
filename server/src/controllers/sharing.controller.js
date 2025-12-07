@@ -1,5 +1,7 @@
-const prisma = require('../config/database');
+const db = require('../config/database');
+const { notes, users, noteCollaborators } = require('../config/schema');
 const { isValidEmail } = require('../utils/validator.util');
+const { eq, and, or, sql } = require('drizzle-orm');
 
 /**
  * Set note visibility
@@ -20,12 +22,10 @@ const setVisibility = async (req, res) => {
     }
 
     // Check ownership
-    const note = await prisma.note.findFirst({
-      where: {
-        id: parseInt(id),
-        owner_id: req.user.userId
-      }
-    });
+    const [note] = await db.select()
+      .from(notes)
+      .where(and(eq(notes.id, parseInt(id)), eq(notes.owner_id, req.user.userId)))
+      .limit(1);
 
     if (!note) {
       return res.status(404).json({
@@ -35,12 +35,11 @@ const setVisibility = async (req, res) => {
     }
 
     // Update visibility
-    const updatedNote = await prisma.note.update({
-      where: { id: parseInt(id) },
-      data: {
-        visibility: visibility.toUpperCase()
-      }
-    });
+    await db.update(notes)
+      .set({ visibility: visibility.toUpperCase(), updated_at: new Date() })
+      .where(eq(notes.id, parseInt(id)));
+
+    const [updatedNote] = await db.select().from(notes).where(eq(notes.id, parseInt(id)));
 
     res.json({
       message: `Note visibility set to ${visibility.toLowerCase()}`,
@@ -83,12 +82,10 @@ const addCollaborator = async (req, res) => {
     }
 
     // Check note ownership
-    const note = await prisma.note.findFirst({
-      where: {
-        id: parseInt(id),
-        owner_id: req.user.userId
-      }
-    });
+    const [note] = await db.select()
+      .from(notes)
+      .where(and(eq(notes.id, parseInt(id)), eq(notes.owner_id, req.user.userId)))
+      .limit(1);
 
     if (!note) {
       return res.status(404).json({
@@ -98,9 +95,10 @@ const addCollaborator = async (req, res) => {
     }
 
     // Find user by email
-    const collaboratorUser = await prisma.user.findUnique({
-      where: { email }
-    });
+    const [collaboratorUser] = await db.select()
+      .from(users)
+      .where(eq(users.email, email))
+      .limit(1);
 
     if (!collaboratorUser) {
       return res.status(404).json({
@@ -118,31 +116,28 @@ const addCollaborator = async (req, res) => {
     }
 
     // Check if already collaborator
-    const existing = await prisma.noteCollaborator.findUnique({
-      where: {
-        note_id_user_id: {
-          note_id: parseInt(id),
-          user_id: collaboratorUser.id
-        }
-      }
-    });
+    const [existing] = await db.select()
+      .from(noteCollaborators)
+      .where(and(eq(noteCollaborators.note_id, parseInt(id)), eq(noteCollaborators.user_id, collaboratorUser.id)))
+      .limit(1);
 
     if (existing) {
       // Update permission if already exists
-      const updated = await prisma.noteCollaborator.update({
-        where: { id: existing.id },
-        data: { permission: perm },
-        include: {
-          user: {
-            select: {
-              id: true,
-              name: true,
-              email: true,
-              avatar_url: true
-            }
-          }
-        }
-      });
+      await db.update(noteCollaborators)
+        .set({ permission: perm })
+        .where(eq(noteCollaborators.id, existing.id));
+
+      const [updated] = await db.select({
+        id: noteCollaborators.id,
+        note_id: noteCollaborators.note_id,
+        user_id: noteCollaborators.user_id,
+        permission: noteCollaborators.permission,
+        added_at: noteCollaborators.added_at,
+        user: sql`JSON_OBJECT('id', ${users.id}, 'name', ${users.name}, 'email', ${users.email}, 'avatar_url', ${users.avatar_url})`
+      })
+      .from(noteCollaborators)
+      .leftJoin(users, eq(noteCollaborators.user_id, users.id))
+      .where(eq(noteCollaborators.id, existing.id));
 
       return res.json({
         message: 'Collaborator permission updated',
@@ -151,23 +146,23 @@ const addCollaborator = async (req, res) => {
     }
 
     // Add new collaborator
-    const collaborator = await prisma.noteCollaborator.create({
-      data: {
-        note_id: parseInt(id),
-        user_id: collaboratorUser.id,
-        permission: perm
-      },
-      include: {
-        user: {
-          select: {
-            id: true,
-            name: true,
-            email: true,
-            avatar_url: true
-          }
-        }
-      }
+    const [newCollab] = await db.insert(noteCollaborators).values({
+      note_id: parseInt(id),
+      user_id: collaboratorUser.id,
+      permission: perm
     });
+
+    const [collaborator] = await db.select({
+      id: noteCollaborators.id,
+      note_id: noteCollaborators.note_id,
+      user_id: noteCollaborators.user_id,
+      permission: noteCollaborators.permission,
+      added_at: noteCollaborators.added_at,
+      user: sql`JSON_OBJECT('id', ${users.id}, 'name', ${users.name}, 'email', ${users.email}, 'avatar_url', ${users.avatar_url})`
+    })
+    .from(noteCollaborators)
+    .leftJoin(users, eq(noteCollaborators.user_id, users.id))
+    .where(eq(noteCollaborators.id, newCollab.insertId));
 
     res.status(201).json({
       message: 'Collaborator added successfully',
@@ -192,23 +187,17 @@ const getCollaborators = async (req, res) => {
     const { id } = req.params;
 
     // Check if user has access (owner or collaborator)
-    const note = await prisma.note.findFirst({
-      where: {
-        id: parseInt(id),
-        OR: [
-          { owner_id: req.user.userId },
-          {
-            collaborators: {
-              some: {
-                user_id: req.user.userId
-              }
-            }
-          }
-        ]
-      }
-    });
+    const [noteOwned] = await db.select()
+      .from(notes)
+      .where(and(eq(notes.id, parseInt(id)), eq(notes.owner_id, req.user.userId)))
+      .limit(1);
 
-    if (!note) {
+    const [noteCollab] = await db.select()
+      .from(noteCollaborators)
+      .where(and(eq(noteCollaborators.note_id, parseInt(id)), eq(noteCollaborators.user_id, req.user.userId)))
+      .limit(1);
+
+    if (!noteOwned && !noteCollab) {
       return res.status(404).json({
         error: 'Not found',
         message: 'Note not found or you do not have access'
@@ -216,24 +205,18 @@ const getCollaborators = async (req, res) => {
     }
 
     // Get collaborators
-    const collaborators = await prisma.noteCollaborator.findMany({
-      where: {
-        note_id: parseInt(id)
-      },
-      include: {
-        user: {
-          select: {
-            id: true,
-            name: true,
-            email: true,
-            avatar_url: true
-          }
-        }
-      },
-      orderBy: {
-        added_at: 'asc'
-      }
-    });
+    const collaborators = await db.select({
+      id: noteCollaborators.id,
+      note_id: noteCollaborators.note_id,
+      user_id: noteCollaborators.user_id,
+      permission: noteCollaborators.permission,
+      added_at: noteCollaborators.added_at,
+      user: sql`JSON_OBJECT('id', ${users.id}, 'name', ${users.name}, 'email', ${users.email}, 'avatar_url', ${users.avatar_url})`
+    })
+    .from(noteCollaborators)
+    .leftJoin(users, eq(noteCollaborators.user_id, users.id))
+    .where(eq(noteCollaborators.note_id, parseInt(id)))
+    .orderBy(noteCollaborators.added_at);
 
     res.json({ collaborators });
 
@@ -255,12 +238,10 @@ const removeCollaborator = async (req, res) => {
     const { id, collaboratorId } = req.params;
 
     // Check note ownership
-    const note = await prisma.note.findFirst({
-      where: {
-        id: parseInt(id),
-        owner_id: req.user.userId
-      }
-    });
+    const [note] = await db.select()
+      .from(notes)
+      .where(and(eq(notes.id, parseInt(id)), eq(notes.owner_id, req.user.userId)))
+      .limit(1);
 
     if (!note) {
       return res.status(404).json({
@@ -270,12 +251,10 @@ const removeCollaborator = async (req, res) => {
     }
 
     // Find and delete collaborator
-    const collaborator = await prisma.noteCollaborator.findFirst({
-      where: {
-        note_id: parseInt(id),
-        user_id: parseInt(collaboratorId)
-      }
-    });
+    const [collaborator] = await db.select()
+      .from(noteCollaborators)
+      .where(and(eq(noteCollaborators.note_id, parseInt(id)), eq(noteCollaborators.user_id, parseInt(collaboratorId))))
+      .limit(1);
 
     if (!collaborator) {
       return res.status(404).json({
@@ -284,9 +263,7 @@ const removeCollaborator = async (req, res) => {
       });
     }
 
-    await prisma.noteCollaborator.delete({
-      where: { id: collaborator.id }
-    });
+    await db.delete(noteCollaborators).where(eq(noteCollaborators.id, collaborator.id));
 
     res.json({
       message: 'Collaborator removed successfully'

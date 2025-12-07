@@ -1,4 +1,6 @@
-const prisma = require('../config/database');
+const db = require('../config/database');
+const { notes, users, folders } = require('../config/schema');
+const { eq, and, desc, asc, sql } = require('drizzle-orm');
 
 /**
  * Create new note
@@ -25,25 +27,37 @@ const createNote = async (req, res) => {
     if (folder_id) noteData.folder_id = parseInt(folder_id);
     if (priority) noteData.priority = priority;
 
-    const note = await prisma.note.create({
-      data: noteData,
-      include: {
-        owner: {
-          select: {
-            id: true,
-            name: true,
-            avatar_url: true
-          }
-        },
-        folder: {
-          select: {
-            id: true,
-            name: true,
-            color: true
-          }
-        }
+    const [newNote] = await db.insert(notes).values(noteData);
+    
+    // Get note with relations
+    const [note] = await db.select({
+      id: notes.id,
+      owner_id: notes.owner_id,
+      folder_id: notes.folder_id,
+      title: notes.title,
+      content: notes.content,
+      status: notes.status,
+      priority: notes.priority,
+      progress: notes.progress,
+      is_favorite: notes.is_favorite,
+      visibility: notes.visibility,
+      created_at: notes.created_at,
+      updated_at: notes.updated_at,
+      owner: {
+        id: users.id,
+        name: users.name,
+        avatar_url: users.avatar_url
+      },
+      folder: {
+        id: folders.id,
+        name: folders.name,
+        color: folders.color
       }
-    });
+    })
+    .from(notes)
+    .leftJoin(users, eq(notes.owner_id, users.id))
+    .leftJoin(folders, eq(notes.folder_id, folders.id))
+    .where(eq(notes.id, newNote.insertId));
 
     res.status(201).json({
       message: 'Note created successfully',
@@ -67,47 +81,48 @@ const getNotes = async (req, res) => {
   try {
     const { sort, status, folder_id } = req.query;
 
-    // Build where clause
-    const whereClause = {
-      owner_id: req.user.userId
-    };
+    // Build where conditions
+    const conditions = [eq(notes.owner_id, req.user.userId)];
 
     if (status) {
-      whereClause.status = status.toUpperCase();
+      conditions.push(eq(notes.status, status.toUpperCase()));
     }
 
     if (folder_id) {
-      whereClause.folder_id = parseInt(folder_id);
+      conditions.push(eq(notes.folder_id, parseInt(folder_id)));
     }
 
     // Build orderBy
-    let orderBy = { updated_at: 'desc' }; // default
+    let orderByClause = [desc(notes.updated_at)]; // default
     if (sort === 'newest') {
-      orderBy = { created_at: 'desc' };
+      orderByClause = [desc(notes.created_at)];
     } else if (sort === 'oldest') {
-      orderBy = { created_at: 'asc' };
+      orderByClause = [asc(notes.created_at)];
     } else if (sort === 'title') {
-      orderBy = { title: 'asc' };
+      orderByClause = [asc(notes.title)];
     }
 
-    const notes = await prisma.note.findMany({
-      where: whereClause,
-      include: {
-        folder: {
-          select: {
-            id: true,
-            name: true,
-            color: true
-          }
-        }
-      },
-      orderBy: [
-        { is_favorite: 'desc' },
-        orderBy
-      ]
-    });
+    const notesList = await db.select({
+      id: notes.id,
+      owner_id: notes.owner_id,
+      folder_id: notes.folder_id,
+      title: notes.title,
+      content: notes.content,
+      status: notes.status,
+      priority: notes.priority,
+      progress: notes.progress,
+      is_favorite: notes.is_favorite,
+      visibility: notes.visibility,
+      created_at: notes.created_at,
+      updated_at: notes.updated_at,
+      folder: sql`JSON_OBJECT('id', ${folders.id}, 'name', ${folders.name}, 'color', ${folders.color})`
+    })
+    .from(notes)
+    .leftJoin(folders, eq(notes.folder_id, folders.id))
+    .where(and(...conditions))
+    .orderBy(desc(notes.is_favorite), ...orderByClause);
 
-    res.json({ notes });
+    res.json({ notes: notesList });
 
   } catch (error) {
     console.error('Get notes error:', error);
@@ -126,29 +141,27 @@ const getNoteById = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const note = await prisma.note.findFirst({
-      where: {
-        id: parseInt(id),
-        owner_id: req.user.userId
-      },
-      include: {
-        owner: {
-          select: {
-            id: true,
-            name: true,
-            avatar_url: true
-          }
-        },
-        folder: {
-          select: {
-            id: true,
-            name: true,
-            color: true,
-            icon: true
-          }
-        }
-      }
-    });
+    const [note] = await db.select({
+      id: notes.id,
+      owner_id: notes.owner_id,
+      folder_id: notes.folder_id,
+      title: notes.title,
+      content: notes.content,
+      status: notes.status,
+      priority: notes.priority,
+      progress: notes.progress,
+      is_favorite: notes.is_favorite,
+      visibility: notes.visibility,
+      created_at: notes.created_at,
+      updated_at: notes.updated_at,
+      owner: sql`JSON_OBJECT('id', ${users.id}, 'name', ${users.name}, 'avatar_url', ${users.avatar_url})`,
+      folder: sql`JSON_OBJECT('id', ${folders.id}, 'name', ${folders.name}, 'color', ${folders.color}, 'icon', ${folders.icon})`
+    })
+    .from(notes)
+    .leftJoin(users, eq(notes.owner_id, users.id))
+    .leftJoin(folders, eq(notes.folder_id, folders.id))
+    .where(and(eq(notes.id, parseInt(id)), eq(notes.owner_id, req.user.userId)))
+    .limit(1);
 
     if (!note) {
       return res.status(404).json({
@@ -178,12 +191,10 @@ const updateNote = async (req, res) => {
     const { title, content, status, priority, progress } = req.body;
 
     // Check ownership
-    const existingNote = await prisma.note.findFirst({
-      where: {
-        id: parseInt(id),
-        owner_id: req.user.userId
-      }
-    });
+    const [existingNote] = await db.select()
+      .from(notes)
+      .where(and(eq(notes.id, parseInt(id)), eq(notes.owner_id, req.user.userId)))
+      .limit(1);
 
     if (!existingNote) {
       return res.status(404).json({
@@ -192,26 +203,36 @@ const updateNote = async (req, res) => {
       });
     }
 
-    const updateData = {};
+    const updateData = { updated_at: new Date() };
     if (title) updateData.title = title.trim();
     if (content !== undefined) updateData.content = content;
     if (status) updateData.status = status.toUpperCase();
     if (priority !== undefined) updateData.priority = priority;
     if (progress !== undefined) updateData.progress = parseInt(progress);
 
-    const note = await prisma.note.update({
-      where: { id: parseInt(id) },
-      data: updateData,
-      include: {
-        folder: {
-          select: {
-            id: true,
-            name: true,
-            color: true
-          }
-        }
-      }
-    });
+    await db.update(notes)
+      .set(updateData)
+      .where(eq(notes.id, parseInt(id)));
+
+    // Get updated note with relations
+    const [note] = await db.select({
+      id: notes.id,
+      owner_id: notes.owner_id,
+      folder_id: notes.folder_id,
+      title: notes.title,
+      content: notes.content,
+      status: notes.status,
+      priority: notes.priority,
+      progress: notes.progress,
+      is_favorite: notes.is_favorite,
+      visibility: notes.visibility,
+      created_at: notes.created_at,
+      updated_at: notes.updated_at,
+      folder: sql`JSON_OBJECT('id', ${folders.id}, 'name', ${folders.name}, 'color', ${folders.color})`
+    })
+    .from(notes)
+    .leftJoin(folders, eq(notes.folder_id, folders.id))
+    .where(eq(notes.id, parseInt(id)));
 
     res.json({
       message: 'Note updated successfully',
@@ -236,12 +257,10 @@ const deleteNote = async (req, res) => {
     const { id } = req.params;
 
     // Check ownership
-    const note = await prisma.note.findFirst({
-      where: {
-        id: parseInt(id),
-        owner_id: req.user.userId
-      }
-    });
+    const [note] = await db.select()
+      .from(notes)
+      .where(and(eq(notes.id, parseInt(id)), eq(notes.owner_id, req.user.userId)))
+      .limit(1);
 
     if (!note) {
       return res.status(404).json({
@@ -250,9 +269,7 @@ const deleteNote = async (req, res) => {
       });
     }
 
-    await prisma.note.delete({
-      where: { id: parseInt(id) }
-    });
+    await db.delete(notes).where(eq(notes.id, parseInt(id)));
 
     res.json({
       message: 'Note deleted successfully'
@@ -276,12 +293,10 @@ const togglePin = async (req, res) => {
     const { id } = req.params;
 
     // Check ownership
-    const existingNote = await prisma.note.findFirst({
-      where: {
-        id: parseInt(id),
-        owner_id: req.user.userId
-      }
-    });
+    const [existingNote] = await db.select()
+      .from(notes)
+      .where(and(eq(notes.id, parseInt(id)), eq(notes.owner_id, req.user.userId)))
+      .limit(1);
 
     if (!existingNote) {
       return res.status(404).json({
@@ -290,12 +305,14 @@ const togglePin = async (req, res) => {
       });
     }
 
-    const note = await prisma.note.update({
-      where: { id: parseInt(id) },
-      data: {
-        is_favorite: !existingNote.is_favorite
-      }
-    });
+    await db.update(notes)
+      .set({ 
+        is_favorite: !existingNote.is_favorite,
+        updated_at: new Date()
+      })
+      .where(eq(notes.id, parseInt(id)));
+
+    const [note] = await db.select().from(notes).where(eq(notes.id, parseInt(id)));
 
     res.json({
       message: note.is_favorite ? 'Note pinned' : 'Note unpinned',
@@ -321,12 +338,10 @@ const moveNote = async (req, res) => {
     const { folder_id, status } = req.body;
 
     // Check ownership
-    const existingNote = await prisma.note.findFirst({
-      where: {
-        id: parseInt(id),
-        owner_id: req.user.userId
-      }
-    });
+    const [existingNote] = await db.select()
+      .from(notes)
+      .where(and(eq(notes.id, parseInt(id)), eq(notes.owner_id, req.user.userId)))
+      .limit(1);
 
     if (!existingNote) {
       return res.status(404).json({
@@ -337,12 +352,10 @@ const moveNote = async (req, res) => {
 
     // If moving to a folder, verify folder ownership
     if (folder_id) {
-      const folder = await prisma.folder.findFirst({
-        where: {
-          id: parseInt(folder_id),
-          owner_id: req.user.userId
-        }
-      });
+      const [folder] = await db.select()
+        .from(folders)
+        .where(and(eq(folders.id, parseInt(folder_id)), eq(folders.owner_id, req.user.userId)))
+        .limit(1);
 
       if (!folder) {
         return res.status(404).json({
@@ -352,7 +365,7 @@ const moveNote = async (req, res) => {
       }
     }
 
-    const updateData = {};
+    const updateData = { updated_at: new Date() };
     if (folder_id !== undefined) {
       updateData.folder_id = folder_id ? parseInt(folder_id) : null;
     }
@@ -360,19 +373,29 @@ const moveNote = async (req, res) => {
       updateData.status = status.toUpperCase();
     }
 
-    const note = await prisma.note.update({
-      where: { id: parseInt(id) },
-      data: updateData,
-      include: {
-        folder: {
-          select: {
-            id: true,
-            name: true,
-            color: true
-          }
-        }
-      }
-    });
+    await db.update(notes)
+      .set(updateData)
+      .where(eq(notes.id, parseInt(id)));
+
+    // Get updated note with relations
+    const [note] = await db.select({
+      id: notes.id,
+      owner_id: notes.owner_id,
+      folder_id: notes.folder_id,
+      title: notes.title,
+      content: notes.content,
+      status: notes.status,
+      priority: notes.priority,
+      progress: notes.progress,
+      is_favorite: notes.is_favorite,
+      visibility: notes.visibility,
+      created_at: notes.created_at,
+      updated_at: notes.updated_at,
+      folder: sql`JSON_OBJECT('id', ${folders.id}, 'name', ${folders.name}, 'color', ${folders.color})`
+    })
+    .from(notes)
+    .leftJoin(folders, eq(notes.folder_id, folders.id))
+    .where(eq(notes.id, parseInt(id)));
 
     res.json({
       message: 'Note moved successfully',

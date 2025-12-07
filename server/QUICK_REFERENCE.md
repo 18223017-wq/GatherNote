@@ -17,6 +17,7 @@ npm run dev
 ```
 
 ## 🔗 Base URL
+
 ```
 http://localhost:3001/api/v1
 ```
@@ -24,6 +25,7 @@ http://localhost:3001/api/v1
 ## 📌 Essential Endpoints Cheat Sheet
 
 ### Authentication
+
 ```bash
 # Register
 POST /auth/register
@@ -36,6 +38,7 @@ Returns: { "token": "..." }
 ```
 
 ### Notes
+
 ```bash
 # Create
 POST /notes
@@ -70,6 +73,7 @@ Body: { "folder_id", "status" }
 ```
 
 ### Folders
+
 ```bash
 # Create
 POST /folders
@@ -95,6 +99,7 @@ Header: Authorization: Bearer {token}
 ```
 
 ### Groups
+
 ```bash
 # Create
 POST /groups
@@ -121,6 +126,7 @@ Header: Authorization: Bearer {token}
 ```
 
 ### Search
+
 ```bash
 # Search Notes
 GET /search?q={query}&scope={private|public}
@@ -131,6 +137,7 @@ GET /search/suggest?q={query}
 ```
 
 ### Sharing
+
 ```bash
 # Set Visibility
 POST /notes/{id}/share
@@ -154,6 +161,7 @@ Header: Authorization: Bearer {token}
 ## 🔑 Authentication
 
 All protected endpoints require:
+
 ```
 Authorization: Bearer {your_jwt_token}
 ```
@@ -174,27 +182,32 @@ Get token from `/auth/login` or `/auth/register` response.
 ## 🗂️ Data Models
 
 ### Note Status
+
 - `UNSTARTED` - Not started
 - `ONGOING` - In progress
 - `ARCHIVED` - Completed/archived
 
 ### Note Visibility
+
 - `PRIVATE` - Owner only
 - `PUBLIC` - Everyone can view
 - `GROUP` - Group members only
 
 ### Collaborator Permission
+
 - `VIEW` - Can view only
 - `EDIT` - Can view and edit
 
 ## 💡 Common Query Parameters
 
 ### Notes
+
 - `?sort=newest|oldest|title`
 - `?status=UNSTARTED|ONGOING|ARCHIVED`
 - `?folder_id={id}`
 
 ### Search
+
 - `?q={query}` - Search term (required)
 - `?scope=private|public` - Search scope
 - `?tag={tag}` - Filter by tag
@@ -210,18 +223,22 @@ Get token from `/auth/login` or `/auth/register` response.
 ## 🐛 Common Issues
 
 ### "Access denied"
+
 - Missing Authorization header
 - Token expired (generate new one)
 
 ### "Not found"
+
 - Wrong resource ID
 - Resource belongs to different user
 
 ### "Validation error"
+
 - Missing required fields
 - Invalid data format
 
 ### Database connection error
+
 - Check MySQL is running
 - Verify DATABASE_URL in .env
 - Run `npm run db:push`

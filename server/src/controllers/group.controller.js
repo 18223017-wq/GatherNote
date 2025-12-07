@@ -1,5 +1,7 @@
-const prisma = require('../config/database');
+const db = require('../config/database');
+const { groups, groupMembers, users } = require('../config/schema');
 const { generateCode } = require('../utils/validator.util');
+const { eq, and, desc, asc, sql } = require('drizzle-orm');
 
 /**
  * Create new group
@@ -22,28 +24,24 @@ const createGroup = async (req, res) => {
     
     while (!isUnique) {
       join_code = generateCode(8);
-      const existing = await prisma.group.findUnique({
-        where: { join_code }
-      });
-      if (!existing) isUnique = true;
+      const existing = await db.select().from(groups).where(eq(groups.join_code, join_code)).limit(1);
+      if (existing.length === 0) isUnique = true;
     }
 
     // Create group
-    const group = await prisma.group.create({
-      data: {
-        name: name.trim(),
-        description,
-        join_code
-      }
+    const [newGroup] = await db.insert(groups).values({
+      name: name.trim(),
+      description,
+      join_code
     });
 
+    const [group] = await db.select().from(groups).where(eq(groups.id, newGroup.insertId));
+
     // Add creator as admin
-    await prisma.groupMember.create({
-      data: {
-        group_id: group.id,
-        user_id: req.user.userId,
-        role: 'ADMIN'
-      }
+    await db.insert(groupMembers).values({
+      group_id: group.id,
+      user_id: req.user.userId,
+      role: 'ADMIN'
     });
 
     res.status(201).json({
@@ -66,32 +64,25 @@ const createGroup = async (req, res) => {
  */
 const getGroups = async (req, res) => {
   try {
-    const memberships = await prisma.groupMember.findMany({
-      where: {
-        user_id: req.user.userId
-      },
-      include: {
-        group: {
-          include: {
-            _count: {
-              select: { members: true }
-            }
-          }
-        }
-      },
-      orderBy: {
-        joined_at: 'desc'
-      }
-    });
+    const memberships = await db.select({
+      group_id: groupMembers.group_id,
+      user_id: groupMembers.user_id,
+      role: groupMembers.role,
+      joined_at: groupMembers.joined_at,
+      group: sql`JSON_OBJECT('id', ${groups.id}, 'name', ${groups.name}, 'description', ${groups.description}, 'join_code', ${groups.join_code}, 'created_at', ${groups.created_at}, 'member_count', (SELECT COUNT(*) FROM ${groupMembers} gm WHERE gm.group_id = ${groups.id}))`
+    })
+    .from(groupMembers)
+    .leftJoin(groups, eq(groupMembers.group_id, groups.id))
+    .where(eq(groupMembers.user_id, req.user.userId))
+    .orderBy(desc(groupMembers.joined_at));
 
-    const groups = memberships.map(m => ({
+    const groupsList = memberships.map(m => ({
       ...m.group,
       my_role: m.role,
-      joined_at: m.joined_at,
-      member_count: m.group._count.members
+      joined_at: m.joined_at
     }));
 
-    res.json({ groups });
+    res.json({ groups: groupsList });
 
   } catch (error) {
     console.error('Get groups error:', error);
@@ -111,12 +102,10 @@ const getGroupById = async (req, res) => {
     const { id } = req.params;
 
     // Check if user is member
-    const membership = await prisma.groupMember.findFirst({
-      where: {
-        group_id: parseInt(id),
-        user_id: req.user.userId
-      }
-    });
+    const [membership] = await db.select()
+      .from(groupMembers)
+      .where(and(eq(groupMembers.group_id, parseInt(id)), eq(groupMembers.user_id, req.user.userId)))
+      .limit(1);
 
     if (!membership) {
       return res.status(403).json({
@@ -125,27 +114,7 @@ const getGroupById = async (req, res) => {
       });
     }
 
-    const group = await prisma.group.findUnique({
-      where: { id: parseInt(id) },
-      include: {
-        members: {
-          include: {
-            user: {
-              select: {
-                id: true,
-                name: true,
-                email: true,
-                avatar_url: true
-              }
-            }
-          },
-          orderBy: [
-            { role: 'desc' }, // ADMIN first
-            { joined_at: 'asc' }
-          ]
-        }
-      }
-    });
+    const [group] = await db.select().from(groups).where(eq(groups.id, parseInt(id))).limit(1);
 
     if (!group) {
       return res.status(404).json({
@@ -153,6 +122,22 @@ const getGroupById = async (req, res) => {
         message: 'Group not found'
       });
     }
+
+    // Get members
+    const members = await db.select({
+      id: groupMembers.id,
+      group_id: groupMembers.group_id,
+      user_id: groupMembers.user_id,
+      role: groupMembers.role,
+      joined_at: groupMembers.joined_at,
+      user: sql`JSON_OBJECT('id', ${users.id}, 'name', ${users.name}, 'email', ${users.email}, 'avatar_url', ${users.avatar_url})`
+    })
+    .from(groupMembers)
+    .leftJoin(users, eq(groupMembers.user_id, users.id))
+    .where(eq(groupMembers.group_id, parseInt(id)))
+    .orderBy(desc(groupMembers.role), asc(groupMembers.joined_at));
+
+    group.members = members;
 
     res.json({
       group: {
@@ -186,9 +171,10 @@ const joinGroup = async (req, res) => {
     }
 
     // Find group
-    const group = await prisma.group.findUnique({
-      where: { join_code: join_code.toUpperCase() }
-    });
+    const [group] = await db.select()
+      .from(groups)
+      .where(eq(groups.join_code, join_code.toUpperCase()))
+      .limit(1);
 
     if (!group) {
       return res.status(404).json({
@@ -198,12 +184,10 @@ const joinGroup = async (req, res) => {
     }
 
     // Check if already member
-    const existingMember = await prisma.groupMember.findFirst({
-      where: {
-        group_id: group.id,
-        user_id: req.user.userId
-      }
-    });
+    const [existingMember] = await db.select()
+      .from(groupMembers)
+      .where(and(eq(groupMembers.group_id, group.id), eq(groupMembers.user_id, req.user.userId)))
+      .limit(1);
 
     if (existingMember) {
       return res.status(409).json({
@@ -213,13 +197,13 @@ const joinGroup = async (req, res) => {
     }
 
     // Add as member
-    const membership = await prisma.groupMember.create({
-      data: {
-        group_id: group.id,
-        user_id: req.user.userId,
-        role: 'MEMBER'
-      }
+    const [newMember] = await db.insert(groupMembers).values({
+      group_id: group.id,
+      user_id: req.user.userId,
+      role: 'MEMBER'
     });
+
+    const [membership] = await db.select().from(groupMembers).where(eq(groupMembers.id, newMember.insertId));
 
     res.status(201).json({
       message: 'Successfully joined group',
@@ -248,12 +232,10 @@ const removeMember = async (req, res) => {
     const currentUserId = req.user.userId;
 
     // Get current user's membership
-    const currentMembership = await prisma.groupMember.findFirst({
-      where: {
-        group_id: groupId,
-        user_id: currentUserId
-      }
-    });
+    const [currentMembership] = await db.select()
+      .from(groupMembers)
+      .where(and(eq(groupMembers.group_id, groupId), eq(groupMembers.user_id, currentUserId)))
+      .limit(1);
 
     if (!currentMembership) {
       return res.status(403).json({
@@ -274,12 +256,10 @@ const removeMember = async (req, res) => {
     }
 
     // Find target membership
-    const targetMembership = await prisma.groupMember.findFirst({
-      where: {
-        group_id: groupId,
-        user_id: targetUserId
-      }
-    });
+    const [targetMembership] = await db.select()
+      .from(groupMembers)
+      .where(and(eq(groupMembers.group_id, groupId), eq(groupMembers.user_id, targetUserId)))
+      .limit(1);
 
     if (!targetMembership) {
       return res.status(404).json({
@@ -289,9 +269,7 @@ const removeMember = async (req, res) => {
     }
 
     // Remove member
-    await prisma.groupMember.delete({
-      where: { id: targetMembership.id }
-    });
+    await db.delete(groupMembers).where(eq(groupMembers.id, targetMembership.id));
 
     res.json({
       message: isLeavingSelf ? 'Successfully left group' : 'Member removed successfully'

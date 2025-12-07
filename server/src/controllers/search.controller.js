@@ -1,4 +1,6 @@
-const prisma = require('../config/database');
+const db = require('../config/database');
+const { notes, users } = require('../config/schema');
+const { eq, or, and, like, desc, sql } = require('drizzle-orm');
 
 /**
  * Global search for notes
@@ -17,46 +19,38 @@ const searchNotes = async (req, res) => {
     }
 
     // Build search conditions
-    const searchConditions = {
-      OR: [
-        { title: { contains: q } },
-        { content: { contains: q } }
-      ]
-    };
+    const searchPattern = `%${q}%`;
+    const conditions = or(
+      like(notes.title, searchPattern),
+      like(notes.content, searchPattern)
+    );
 
+    let whereClause = conditions;
+    
     // Scope filter
     if (scope === 'private' && userId) {
-      searchConditions.owner_id = userId;
-    } else if (scope === 'public') {
-      // For now, all notes are searchable
-      // In future: Add visibility field to Note model
+      whereClause = and(conditions, eq(notes.owner_id, userId));
     }
 
     // Execute search
-    const notes = await prisma.note.findMany({
-      where: searchConditions,
-      select: {
-        id: true,
-        title: true,
-        content: true,
-        status: true,
-        is_favorite: true,
-        created_at: true,
-        updated_at: true,
-        owner: {
-          select: {
-            id: true,
-            name: true,
-            avatar_url: true
-          }
-        }
-      },
-      take: 20,
-      orderBy: { updated_at: 'desc' }
-    });
+    const notesList = await db.select({
+      id: notes.id,
+      title: notes.title,
+      content: notes.content,
+      status: notes.status,
+      is_favorite: notes.is_favorite,
+      created_at: notes.created_at,
+      updated_at: notes.updated_at,
+      owner: sql`JSON_OBJECT('id', ${users.id}, 'name', ${users.name}, 'avatar_url', ${users.avatar_url})`
+    })
+    .from(notes)
+    .leftJoin(users, eq(notes.owner_id, users.id))
+    .where(whereClause)
+    .orderBy(desc(notes.updated_at))
+    .limit(20);
 
     // Create snippets
-    const results = notes.map(note => {
+    const results = notesList.map(note => {
       let snippet = note.content || '';
       if (snippet.length > 150) {
         snippet = snippet.substring(0, 150) + '...';
@@ -97,19 +91,15 @@ const getSuggestions = async (req, res) => {
     }
 
     // Get unique titles that match the query
-    const notes = await prisma.note.findMany({
-      where: {
-        title: { contains: q }
-      },
-      select: {
-        title: true
-      },
-      take: 10,
-      orderBy: { updated_at: 'desc' }
-    });
+    const searchPattern = `%${q}%`;
+    const notesList = await db.select({ title: notes.title })
+      .from(notes)
+      .where(like(notes.title, searchPattern))
+      .orderBy(desc(notes.updated_at))
+      .limit(10);
 
     // Extract unique suggestions
-    const suggestions = [...new Set(notes.map(n => n.title))];
+    const suggestions = [...new Set(notesList.map(n => n.title))];
 
     res.json(suggestions);
 

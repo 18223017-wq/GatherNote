@@ -1,4 +1,6 @@
-const prisma = require('../config/database');
+const db = require('../config/database');
+const { folders, notes } = require('../config/schema');
+const { eq, and, desc, sql } = require('drizzle-orm');
 
 /**
  * Create new folder
@@ -15,15 +17,15 @@ const createFolder = async (req, res) => {
       });
     }
 
-    const folder = await prisma.folder.create({
-      data: {
-        owner_id: req.user.userId,
-        name: name.trim(),
-        description,
-        color,
-        icon
-      }
+    const [newFolder] = await db.insert(folders).values({
+      owner_id: req.user.userId,
+      name: name.trim(),
+      description,
+      color,
+      icon
     });
+
+    const [folder] = await db.select().from(folders).where(eq(folders.id, newFolder.insertId));
 
     res.status(201).json({
       message: 'Folder created successfully',
@@ -45,22 +47,22 @@ const createFolder = async (req, res) => {
  */
 const getFolders = async (req, res) => {
   try {
-    const folders = await prisma.folder.findMany({
-      where: {
-        owner_id: req.user.userId
-      },
-      include: {
-        _count: {
-          select: { notes: true }
-        }
-      },
-      orderBy: [
-        { is_pinned: 'desc' },
-        { created_at: 'desc' }
-      ]
-    });
+    const foldersList = await db.select({
+      id: folders.id,
+      owner_id: folders.owner_id,
+      name: folders.name,
+      description: folders.description,
+      color: folders.color,
+      icon: folders.icon,
+      is_pinned: folders.is_pinned,
+      created_at: folders.created_at,
+      _count: sql`(SELECT COUNT(*) FROM ${notes} WHERE ${notes.folder_id} = ${folders.id})`
+    })
+    .from(folders)
+    .where(eq(folders.owner_id, req.user.userId))
+    .orderBy(desc(folders.is_pinned), desc(folders.created_at));
 
-    res.json({ folders });
+    res.json({ folders: foldersList });
 
   } catch (error) {
     console.error('Get folders error:', error);
@@ -79,17 +81,9 @@ const getFolderById = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const folder = await prisma.folder.findFirst({
-      where: {
-        id: parseInt(id),
-        owner_id: req.user.userId
-      },
-      include: {
-        notes: {
-          orderBy: { updated_at: 'desc' }
-        }
-      }
-    });
+    const [folder] = await db.select().from(folders)
+      .where(and(eq(folders.id, parseInt(id)), eq(folders.owner_id, req.user.userId)))
+      .limit(1);
 
     if (!folder) {
       return res.status(404).json({
@@ -97,6 +91,13 @@ const getFolderById = async (req, res) => {
         message: 'Folder not found'
       });
     }
+
+    // Get notes for this folder
+    const folderNotes = await db.select().from(notes)
+      .where(eq(notes.folder_id, parseInt(id)))
+      .orderBy(desc(notes.updated_at));
+
+    folder.notes = folderNotes;
 
     res.json({ folder });
 
@@ -119,12 +120,9 @@ const updateFolder = async (req, res) => {
     const { name, description, color, icon, is_pinned } = req.body;
 
     // Check ownership
-    const existingFolder = await prisma.folder.findFirst({
-      where: {
-        id: parseInt(id),
-        owner_id: req.user.userId
-      }
-    });
+    const [existingFolder] = await db.select().from(folders)
+      .where(and(eq(folders.id, parseInt(id)), eq(folders.owner_id, req.user.userId)))
+      .limit(1);
 
     if (!existingFolder) {
       return res.status(404).json({
@@ -140,10 +138,9 @@ const updateFolder = async (req, res) => {
     if (icon !== undefined) updateData.icon = icon;
     if (is_pinned !== undefined) updateData.is_pinned = is_pinned;
 
-    const folder = await prisma.folder.update({
-      where: { id: parseInt(id) },
-      data: updateData
-    });
+    await db.update(folders).set(updateData).where(eq(folders.id, parseInt(id)));
+
+    const [folder] = await db.select().from(folders).where(eq(folders.id, parseInt(id)));
 
     res.json({
       message: 'Folder updated successfully',
@@ -168,17 +165,9 @@ const deleteFolder = async (req, res) => {
     const { id } = req.params;
 
     // Check ownership
-    const folder = await prisma.folder.findFirst({
-      where: {
-        id: parseInt(id),
-        owner_id: req.user.userId
-      },
-      include: {
-        _count: {
-          select: { notes: true }
-        }
-      }
-    });
+    const [folder] = await db.select().from(folders)
+      .where(and(eq(folders.id, parseInt(id)), eq(folders.owner_id, req.user.userId)))
+      .limit(1);
 
     if (!folder) {
       return res.status(404).json({
@@ -187,17 +176,18 @@ const deleteFolder = async (req, res) => {
       });
     }
 
+    // Count notes in folder
+    const [noteCount] = await db.select({ count: sql`COUNT(*)` }).from(notes).where(eq(notes.folder_id, parseInt(id)));
+
     // Optional: Prevent deletion if folder has notes
-    if (folder._count.notes > 0) {
+    if (noteCount.count > 0) {
       return res.status(400).json({
         error: 'Validation error',
         message: 'Cannot delete folder with notes. Please move or delete notes first.'
       });
     }
 
-    await prisma.folder.delete({
-      where: { id: parseInt(id) }
-    });
+    await db.delete(folders).where(eq(folders.id, parseInt(id)));
 
     res.json({
       message: 'Folder deleted successfully'
