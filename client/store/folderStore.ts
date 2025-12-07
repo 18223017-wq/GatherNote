@@ -1,0 +1,1 @@
+// Folder store (Zustand/Context)
